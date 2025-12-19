@@ -1,234 +1,294 @@
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const fg = require('fast-glob');
+const { INTERNAL_EXCLUDES } = require('./config');
+const { clean } = require('clean-context');
 
-// Helper functions (no changes needed for these)
-function getFileSizeInKB(filePath) { try { const stats = fs.statSync(filePath); return stats.isFile() ? stats.size / 1024 : 0; } catch (error) { return 0; } }
-
-function estimateTokenCount(text) { return Math.ceil(text.length * 0.25); }
-
-function getLanguageFromExt(filePath) { const ext = path.extname(filePath).toLowerCase(); const filename = path.basename(filePath).toLowerCase(); if (filename === 'gradlew') return 'bash'; if (filename === 'proguard-rules.pro' || ext === '.pro') return 'properties'; if (filename.startsWith('readme')) return 'markdown'; if (filename === 'license') return 'text'; const langMap = { '.js': 'javascript', '.jsx': 'jsx', '.ts': 'typescript', '.tsx': 'tsx', '.php': 'php', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.md': 'markdown', '.txt': 'text', '.yml': 'yaml', '.yaml': 'yaml', '.sh': 'bash', '.py': 'python', '.java': 'java', '.c': 'c', '.cpp': 'cpp', '.h': 'c', '.hpp': 'cpp', '.cs': 'csharp', '.rb': 'ruby', '.go': 'go', '.rs': 'rust', '.swift': 'swift', '.kt': 'kotlin', '.kts': 'kotlin', '.dart': 'dart', '.sql': 'sql', '.env': 'dotenv', '.config': 'plaintext', '.xml': 'xml', '.gradle': 'groovy', '.r': 'r', '.R': 'r'}; return langMap[ext] || 'plaintext'; }
-
-function generateTreeStructure(files) { if (!files || files.length === 0) return "[No files to display]"; const tree = {}; files.forEach(file => { const parts = file.startsWith('./') ? file.substring(2).split('/') : file.split('/'); let current = tree; parts.forEach((part, i) => { const isFile = i === parts.length - 1; if (isFile) { current.files = current.files || []; current.files.push(part); } else { current[part] = current[part] || {}; current = current[part]; } }); }); const buildTree = (node, prefix = '') => { let result = ''; const dirs = Object.keys(node).filter(k => k !== 'files').sort(); const files = (node.files || []).sort(); dirs.forEach((dir, i) => { const isLast = i === dirs.length - 1 && files.length === 0; result += `${prefix}${isLast ? '└── ' : '├── '}📁 ${dir}/\n`; result += buildTree(node[dir], `${prefix}${isLast ? '    ' : '│   '}`); }); files.forEach((file, i) => { const isLast = i === files.length - 1; result += `${prefix}${isLast ? '└── ' : '├── '}📄 ${file}\n`; }); return result; }; return buildTree(tree); }
-
-function formatFileSize(sizeInKB) { if (sizeInKB < 0.01 && sizeInKB > 0) return "< 0.01 KB"; if (sizeInKB === 0) return "0 KB"; return sizeInKB < 1024 ? `${sizeInKB.toFixed(2)} KB` : `${(sizeInKB / 1024).toFixed(2)} MB`; }
-
-function formatNumber(num) { return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+// --- Helper Functions ---
 
 /**
- * Scans a string of text to find the longest consecutive sequence of backticks.
- * @param {string} content The text content to scan.
- * @returns {number} The length of the longest backtick sequence found.
+ * Safely gets file size. Returns 0 if file is missing/error.
  */
-function getLongestBacktickSequence(content) {
-    // Use a regular expression to find all sequences of backticks
-    const matches = content.match(/`+/g) || [];
-    if (matches.length === 0) {
-        return 0; // No backticks in the content
+function getFileSizeInKB(filePath) {
+    try {
+        const stats = fs.statSync(filePath);
+        return stats.isFile() ? stats.size / 1024 : 0;
+    } catch (error) {
+        return 0;
     }
-    // Find the length of the longest sequence from all matches
+}
+
+/**
+ * Estimates tokens.
+ * Heuristic: Code is denser than prose. ~3.2 chars per token is a safe average.
+ */
+function estimateTokenCount(text) {
+    return Math.ceil(text.length / 3.2);
+}
+
+/**
+ * Returns a language identifier for Markdown syntax highlighting (Output only).
+ * Note: clean-context handles language detection for stripping separately.
+ */
+function getLanguageFromExt(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    const filename = path.basename(filePath).toLowerCase();
+
+    if (filename === 'dockerfile') return 'dockerfile';
+    if (filename === 'gradlew') return 'bash';
+    if (filename === 'makefile') return 'makefile';
+    if (filename.startsWith('readme')) return 'markdown';
+    if (filename === 'genctx') return 'javascript';
+
+    // Map extensions to markdown fence languages
+    const langMap = {
+        '.js': 'javascript', '.jsx': 'jsx', '.mjs': 'javascript', '.cjs': 'javascript',
+        '.ts': 'typescript', '.tsx': 'tsx',
+        '.py': 'python', '.rb': 'ruby',
+        '.java': 'java', '.kt': 'kotlin',
+        '.cs': 'csharp', '.go': 'go', '.rs': 'rust', '.php': 'php',
+        '.html': 'html', '.css': 'css', '.scss': 'scss',
+        '.json': 'json', '.md': 'markdown', '.yml': 'yaml', '.yaml': 'yaml',
+        '.sh': 'bash', '.zsh': 'bash',
+        '.xml': 'xml', '.sql': 'sql', '.vue': 'vue', '.svelte': 'svelte'
+    };
+    return langMap[ext] || 'plaintext';
+}
+
+/**
+ * Visualizes the file structure.
+ */
+function generateTreeStructure(filePaths) {
+    if (!filePaths || filePaths.length === 0) return "[No files to display]";
+
+    const tree = {};
+    const rootDir = process.cwd();
+
+    filePaths.forEach(filePath => {
+        const relativePath = path.relative(rootDir, filePath);
+        const parts = relativePath.split(path.sep);
+
+        let current = tree;
+        parts.forEach((part, i) => {
+            const isFile = i === parts.length - 1;
+            if (isFile) {
+                current.files = current.files || [];
+                current.files.push(part);
+            } else {
+                current[part] = current[part] || {};
+                current = current[part];
+            }
+        });
+    });
+
+    const buildTree = (node, prefix = '') => {
+        let result = '';
+        const dirs = Object.keys(node).filter(k => k !== 'files').sort();
+        const files = (node.files || []).sort();
+
+        dirs.forEach((dir, i) => {
+            const isLast = i === dirs.length - 1 && files.length === 0;
+            result += `${prefix}${isLast ? '└── ' : '├── '}📁 ${dir}/\n`;
+            result += buildTree(node[dir], `${prefix}${isLast ? '    ' : '│   '}`);
+        });
+
+        files.forEach((file, i) => {
+            const isLast = i === files.length - 1;
+            result += `${prefix}${isLast ? '└── ' : '├── '}📄 ${file}\n`;
+        });
+        return result;
+    };
+    return buildTree(tree);
+}
+
+function formatFileSize(sizeInKB) {
+    if (sizeInKB < 0.01 && sizeInKB > 0) return "< 0.01 KB";
+    return sizeInKB < 1024 ? `${sizeInKB.toFixed(2)} KB` : `${(sizeInKB / 1024).toFixed(2)} MB`;
+}
+
+function formatNumber(num) {
+    return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function getLongestBacktickSequence(content) {
+    const matches = content.match(/`+/g) || [];
+    if (matches.length === 0) return 0;
     return Math.max(...matches.map(match => match.length));
 }
 
-/**
- * Reads the .gitignore file from the project root and parses it into exclusion patterns.
- * This is a simplified parser that handles comments and basic file/directory patterns.
- * @returns {string[]} An array of patterns to be excluded.
- */
 function parseGitignore() {
     const gitignorePath = path.join(process.cwd(), '.gitignore');
-    if (!fs.existsSync(gitignorePath)) {
-        return [];
-    }
+    if (!fs.existsSync(gitignorePath)) return [];
 
     const patterns = fs.readFileSync(gitignorePath, 'utf8')
-        .split('\n')
-        .map(line => line.trim())
-        // Filter out empty lines and comments.
+        .split('\n').map(line => line.trim())
         .filter(line => line && !line.startsWith('#'))
-        // Basic conversion to patterns our find command can use.
-        .map(pattern => {
-            // Remove leading slashes for broader matching, e.g., /build -> build
-            if (pattern.startsWith('/')) {
-                return pattern.substring(1);
-            }
-            return pattern;
-        });
+        .map(pattern => pattern.startsWith('/') ? pattern.substring(1) : pattern);
 
-    console.log(`   Loaded ${patterns.length} patterns from .gitignore.`);
     return patterns;
 }
 
-/**
- * Executes one or more `find` commands to locate all relevant files.
- * This function uses a two-pass approach for maximum reliability:
- * 1. Find all explicitly included paths (including hidden ones).
- * 2. Find all regular paths (non-hidden and not excluded).
- * It then merges the results.
- * @param {object} config The final configuration object.
- * @param {boolean} debug If true, logs the generated find command.
- * @returns {Promise<string[]>} A promise that resolves to an array of file paths.
- */
-async function findRelevantFiles(config, debug = false) {
-    // This function runs a shell command that may contain multiple find commands.
-    const commands = [];
+// --- Core Logic ---
 
-    // --- Command 1: Find EXPLICITLY INCLUDED files ---
-    // This command finds everything within the paths specified in `includePaths`.
-    // It is simple and powerful, correctly grabbing hidden files if they are included.
-    const includePaths = config.includePaths || [];
-    if (includePaths.length > 0) {
-        const paths = includePaths.map(p => `./${p.replace(/^\.\//, '')}`).join(' ');
-        commands.push(`find ${paths} -type f`);
-    }
+async function findRelevantFiles(config) {
+    const includePatterns = config.include || ['**/*'];
+    const excludePatterns = config.exclude || [];
+    const MANDATORY_EXCLUDES = ['node_modules', '.git', '.DS_Store'];
 
-    // --- Command 2: Find REGULAR files ---
-    // This command finds all non-hidden files that are not explicitly excluded.
-    let effectiveExcludePaths = [...(config.excludePaths || [])];
-    if (config.useGitignore) {
+    let ignorePatterns = [...new Set([...excludePatterns, ...MANDATORY_EXCLUDES])];
+
+    if (config.useGitignore !== false) {
         const gitignorePatterns = parseGitignore();
-        effectiveExcludePaths = [...new Set([...effectiveExcludePaths, ...gitignorePatterns])];
-    }
-    
-    let regularFilesCommand = "find . -type f -not -path '*/.*/*'";
-
-    if (effectiveExcludePaths.length > 0) {
-        const excludeConditions = effectiveExcludePaths.map(p => {
-            const pattern = p.replace(/'/g, "'\\''");
-            if (pattern.endsWith('/')) return `-path '*/${pattern}*'`;
-            if (pattern.startsWith('*.')) return `-name '${pattern}'`;
-            return `\\( -name '${pattern}' -o -path '*/${pattern}/*' \\)`;
-        }).join(' -o ');
-        regularFilesCommand += ` -a -not \\( ${excludeConditions} \\)`;
-    }
-    commands.push(regularFilesCommand);
-
-    // --- Combine, Execute, and Deduplicate ---
-    // We join commands with ';', pipe to sort, and then pipe to uniq to remove duplicates.
-    const finalCommand = commands.join('; ');
-
-    if (debug) {
-        console.log("DEBUG: Running final shell command:");
-        console.log(finalCommand);
+        ignorePatterns.push(...gitignorePatterns);
     }
 
-    return new Promise((resolve) => {
-        // We wrap the command in a subshell `sh -c "..."` to handle multiple commands.
-        // The output is piped to `sort | uniq` to merge and deduplicate results.
-        exec(`${finalCommand} | sort -u`, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-            if (debug && stderr && stderr.trim().length > 0) {
-                console.warn("DEBUG: `find` command STDERR:", stderr.trim());
-            }
-            if (error) {
-                console.error(`\n❌ Error executing find command (exit code ${error.code}).`);
-                resolve([]);
-                return;
-            }
-            const files = stdout.split('\n').filter(line => line.trim() !== '');
-            resolve(files);
+    const userIncludes = config.include || [];
+    const activeInternalExcludes = INTERNAL_EXCLUDES.filter(ignored => {
+        return !userIncludes.some(inc => {
+            if (ignored.startsWith('*.')) return inc.endsWith(ignored.slice(1));
+            return inc.endsWith(ignored);
         });
     });
-}
 
-/**
- * Generates the final context.md file from the list of files to process.
- * @param {object} config The final configuration object.
- * @param {boolean} debug Enables debug logging.
- */
-async function generateContextFile(config, debug = false) {
-  console.log("\n🔍 Finding relevant files based on your configuration...");
-  const initialFiles = await findRelevantFiles(config, debug);
-
-  if (initialFiles.length === 0) {
-      console.log("\n⚠️ No files found that match your criteria.");
-      console.log("   Run `genctx --init` to create a config file and customize it.");
-      return;
-  }
-
-  console.log(`   Found ${initialFiles.length} potential files. Filtering by extension...`);
-
-  const filesToProcess = initialFiles.filter(file => {
-      if (config.includeExtensions.length === 0) return true;
-      const ext = path.extname(file).toLowerCase();
-      return config.includeExtensions.includes(ext);
-  });
-
-  if (filesToProcess.length === 0) {
-      console.log(`\n⚠️ No files remaining after filtering by 'includeExtensions'.`);
-      return;
-  }
-  console.log(`   Processing ${filesToProcess.length} files...`);
-
-  // This custom sort function prioritizes './README.md' to the top of the list.
-  filesToProcess.sort((a, b) => {
-      const aIsReadme = path.basename(a).toLowerCase() === 'readme.md';
-      const bIsReadme = path.basename(b).toLowerCase() === 'readme.md';
-
-      if (aIsReadme && !bIsReadme) return -1; // a comes first
-      if (!aIsReadme && bIsReadme) return 1;  // b comes first
-      return a.localeCompare(b); // alphabetical for all others
-  });
-
-  const stats = { totalFilesFound: initialFiles.length, totalFilesProcessed: filesToProcess.length, includedFileContents: 0, skippedDueToSize: 0, skippedOther: 0, totalTokens: 0, totalOriginalSizeKB: 0 };
-
-  const projectName = path.basename(process.cwd());
-
-  let outputContent = `# Project Context: ${projectName}\n\nGenerated: ${new Date().toISOString()} w/ genctx\n\n`;
-  outputContent += `## Configuration Used\n\n\`\`\`json\n${JSON.stringify({ presets: config.presets, outputFile: config.outputFile, maxFileSizeKB: config.maxFileSizeKB }, null, 2)}\n\`\`\`\n\n`;
-  outputContent += `## Directory Structure\n\n\`\`\`\n${generateTreeStructure(filesToProcess)}\`\`\`\n\n`;
-  outputContent += `## File Contents\n\n`;
-
-  for (const filePath of filesToProcess) {
-    const currentFileSizeKB = getFileSizeInKB(filePath);
-    stats.totalOriginalSizeKB += currentFileSizeKB;
-
-    if (currentFileSizeKB > config.maxFileSizeKB) {
-      stats.skippedDueToSize++;
-      outputContent += `### \`${filePath}\`\n\n*File content skipped: Size ${formatFileSize(currentFileSizeKB)} exceeds ${config.maxFileSizeKB} KB limit.*\n\n`;
-      continue;
-    }
+    ignorePatterns = [...ignorePatterns, ...activeInternalExcludes];
 
     try {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      const language = getLanguageFromExt(filePath);
-      stats.includedFileContents++;
-      stats.totalTokens += estimateTokenCount(fileContent);
-
-      // We find the longest sequence in the content and add one.
-      // We ensure a minimum of 4 for consistency and to handle the common case well.
-      const longestSequence = getLongestBacktickSequence(fileContent);
-      const fenceLength = Math.max(4, longestSequence + 1);
-      const fence = '`'.repeat(fenceLength);
-
-      // Construct the output with the dynamic fence.
-      outputContent += `### \`${filePath}\`\n\n${fence}${language}\n${fileContent.trim() ? fileContent : '[EMPTY FILE]'}\n${fence}\n\n`;
-
+        const files = await fg(includePatterns, {
+            ignore: ignorePatterns,
+            cwd: process.cwd(),
+            onlyFiles: true,
+            absolute: true,
+            dot: true
+        });
+        return files.sort();
     } catch (error) {
-      stats.skippedOther++;
-      outputContent += `### \`${filePath}\`\n\n*Error reading file: ${error.message}*\n\n`;
-      console.warn(`Warning on ${filePath}: ${error.message}`);
+        console.error("Error finding files:", error);
+        return [];
     }
-  }
+}
 
-  const structureTokens = estimateTokenCount(outputContent.replace(/```[^`]*?\n[\s\S]*?\n```/g, ''));
-  stats.totalTokens += structureTokens;
+async function generateContextFile(config) {
+    console.log("\n🔍 Finding relevant files...");
+    const filesToProcess = await findRelevantFiles(config);
 
-  fs.writeFileSync(config.outputFile, outputContent);
-  console.log(`\n💾 Writing output to ${config.outputFile}...`);
-  const outputFileSizeKB = getFileSizeInKB(config.outputFile);
+    if (filesToProcess.length === 0) {
+        console.log("\n⚠️ No files found. Check your configuration.");
+        return;
+    }
 
-  console.log("\n" + "=".repeat(60));
-  console.log("📊 CONTEXT FILE STATISTICS");
-  console.log("=".repeat(60));
-  console.log(`  • Context file created: ${config.outputFile} (${formatFileSize(outputFileSizeKB)})`);
-  console.log(`  • Estimated total tokens: ~${formatNumber(stats.totalTokens)}`);
-  console.log(`\n  • Files found by search: ${stats.totalFilesFound}`);
-  console.log(`  • Files processed (after ext filter): ${stats.totalFilesProcessed}`);
-  console.log(`  • Content included: ${stats.includedFileContents} files`);
-  console.log(`  • Skipped (size > ${config.maxFileSizeKB}KB): ${stats.skippedDueToSize} files`);
-  console.log(`  • Skipped (read errors): ${stats.skippedOther} files`);
-  console.log("=".repeat(60));
-  console.log("✨ Done!");
+    // Sort: README first, then alphabetical
+    filesToProcess.sort((a, b) => {
+        const aName = path.basename(a).toLowerCase();
+        const bName = path.basename(b).toLowerCase();
+        if (aName === 'readme.md' && bName !== 'readme.md') return -1;
+        if (aName !== 'readme.md' && bName === 'readme.md') return 1;
+        return a.localeCompare(b);
+    });
+
+    console.log(`   Processing ${filesToProcess.length} files...`);
+
+    const stats = {
+        totalFilesFound: filesToProcess.length,
+        totalFilesProcessed: filesToProcess.length,
+        includedFileContents: 0,
+        skippedDueToSize: 0,
+        skippedOther: 0,
+        totalTokens: 0
+    };
+
+    const projectName = path.basename(process.cwd());
+
+    let outputContent = `# Project Context: ${projectName}\n\nGenerated: ${new Date().toISOString()} via genctx\n\n`;
+
+    outputContent += `## Configuration\n\`\`\`json\n${JSON.stringify({
+        include: config.include,
+        exclude: config.exclude,
+        options: config.options
+    }, null, 2)}\n\`\`\`\n\n`;
+
+    outputContent += `## Directory Structure\n\n\`\`\`\n${generateTreeStructure(filesToProcess)}\`\`\`\n\n`;
+    outputContent += `## File Contents\n\n`;
+
+    for (const filePath of filesToProcess) {
+        // Enforce Total Token Limit
+        if (config.options?.maxTotalTokens > 0 && stats.totalTokens >= config.options.maxTotalTokens) {
+            console.warn(`⚠️  Context Limit Reached (${formatNumber(stats.totalTokens)} tokens). Stopping.`);
+            outputContent += `\n> **Context Limit Reached**: Further files omitted.\n`;
+            break;
+        }
+
+        const currentFileSizeKB = getFileSizeInKB(filePath);
+        
+        // Config Options
+        const maxKB = config.options?.maxFileSizeKB || 2048;
+        const rmComments = config.options?.removeComments || false;
+        const rmEmpty = config.options?.removeEmptyLines || false;
+        const maxFileTokens = config.options?.maxFileTokens || 0;
+
+        if (currentFileSizeKB > maxKB) {
+            stats.skippedDueToSize++;
+            const relativeName = path.relative(process.cwd(), filePath);
+            outputContent += `### \`${relativeName}\`\n\n*Skipped: Size ${formatFileSize(currentFileSizeKB)} > ${maxKB} KB*\n\n`;
+            continue;
+        }
+
+        try {
+            let fileContent = fs.readFileSync(filePath, 'utf8');
+            const language = getLanguageFromExt(filePath); // For Markdown display
+
+            // --- OPTIMIZATION: Stripping Comments ---
+            if (rmComments) {
+                // Pass content + extension to the clean-context engine
+                fileContent = clean(fileContent, { lang: path.extname(filePath) });
+            }
+
+            // --- OPTIMIZATION: Removing Empty Lines ---
+            if (rmEmpty) {
+                fileContent = fileContent.replace(/^\s*[\r\n]/gm, "");
+            }
+
+            const fileTokens = estimateTokenCount(fileContent);
+
+            if (maxFileTokens > 0 && fileTokens > maxFileTokens) {
+                stats.skippedDueToSize++;
+                const relativeName = path.relative(process.cwd(), filePath);
+                outputContent += `### \`${relativeName}\`\n\n*Skipped: Token count ~${formatNumber(fileTokens)} > ${maxFileTokens}*\n\n`;
+                continue;
+            }
+
+            stats.includedFileContents++;
+            stats.totalTokens += fileTokens;
+
+            const longestSequence = getLongestBacktickSequence(fileContent);
+            const fenceLength = Math.max(3, longestSequence + 1);
+            const fence = '`'.repeat(fenceLength);
+
+            const relativeName = path.relative(process.cwd(), filePath);
+            outputContent += `### \`${relativeName}\`\n\n${fence}${language}\n${fileContent.trim() ? fileContent : '[EMPTY FILE]'}\n${fence}\n\n`;
+
+        } catch (error) {
+            stats.skippedOther++;
+            const relativeName = path.relative(process.cwd(), filePath);
+            outputContent += `### \`${relativeName}\`\n\n*Read Error: ${error.message}*\n\n`;
+            console.warn(`Warning on ${filePath}: ${error.message}`);
+        }
+    }
+
+    stats.totalTokens += estimateTokenCount(outputContent.replace(/```[^`]*?\n[\s\S]*?\n```/g, ''));
+
+    fs.writeFileSync(config.outputFile, outputContent);
+    const outputFileSizeKB = getFileSizeInKB(config.outputFile);
+
+    console.log("\n" + "=".repeat(60));
+    console.log("📊 GENERATION STATISTICS");
+    console.log("=".repeat(60));
+    console.log(`  • Output File:    ${config.outputFile} (${formatFileSize(outputFileSizeKB)})`);
+    console.log(`  • Token Estimate: ~${formatNumber(stats.totalTokens)}`);
+    console.log(`  • Files Included: ${stats.includedFileContents} / ${stats.totalFilesProcessed}`);
+    if (config.options?.removeComments) console.log(`  • Optimization:   Comments Stripped (via clean-context) ✂️`);
+    if (config.options?.removeEmptyLines) console.log(`  • Optimization:   Empty Lines Removed ✂️`);
+    console.log("=".repeat(60));
+    console.log("✨ Done!");
 }
 
 module.exports = { generateContextFile };

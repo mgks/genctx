@@ -1,179 +1,184 @@
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
-const { BASE_CONFIG, PRESETS, loadConfig, saveConfig } = require('./config');
+const { DEFAULT_CONFIG, PRESETS, loadConfig, saveConfig } = require('./config');
 const { generateContextFile } = require('./generator');
 
-/**
- * Applies modifications from CLI arguments to a configuration object.
- * @param {object} currentConfig The starting configuration.
- * @param {object} argv The parsed yargs arguments.
- * @returns {{config: object, modified: boolean}} The new config and a flag indicating if changes were made.
- */
+// Format JSON config with grouped excludes for readability
+function formatPrettyConfig(config) {
+  let json = JSON.stringify(config, null, 2);
+  const excludeRegex = /"exclude": \[\s*([\s\S]*?)\s*\]/;
+  const match = json.match(excludeRegex);
+
+  if (match) {
+    const rawContent = match[1];
+    const items = rawContent.split(',').map(s => s.trim().replace(/"/g, '')).filter(s => s);
+
+    const groups = {
+      sys: [], sec: [], build: [], lang: [], files: []
+    };
+
+    items.forEach(item => {
+      const i = item.toLowerCase();
+      if (['node_modules', '.git'].includes(i)) groups.sys.push(item);
+      else if (i.startsWith('.env')) groups.sec.push(item);
+      else if (['dist', 'build', 'out', 'target', 'vendor', 'bin', '.next', '.nuxt'].includes(i)) groups.build.push(item);
+      else if (['.venv', 'venv'].includes(item)) groups.lang.push(item);
+      else groups.files.push(item);
+    });
+
+    const lines = [];
+    if (groups.sys.length) lines.push(groups.sys);
+    if (groups.sec.length) lines.push(groups.sec);
+    if (groups.build.length) lines.push(groups.build);
+    if (groups.lang.length) lines.push(groups.lang);
+    if (groups.files.length) lines.push(groups.files);
+
+    const newContent = lines.map((grp, idx) => {
+      const isLast = idx === lines.length - 1;
+      return `\n    ${grp.map(x => `"${x}"`).join(', ')}${isLast ? '' : ','}`;
+    }).join('');
+
+    json = json.replace(excludeRegex, `"exclude": [${newContent}\n  ]`);
+  }
+  return json;
+}
+
 function applyCliModifications(currentConfig, argv) {
   let modified = false;
-  // Create a deep copy to avoid side effects.
   const newConfig = JSON.parse(JSON.stringify(currentConfig));
-
-  // Helper to merge arrays while maintaining uniqueness.
   const mergeUnique = (target, source) => [...new Set([...target, ...source])];
 
-  // Apply presets if provided.
+  // Presets
   if (argv.preset && argv.preset.length > 0) {
     argv.preset.forEach(p => {
       if (PRESETS[p]) {
-        if (!newConfig.presets.includes(p)) {
-          newConfig.presets.push(p);
+        if (PRESETS[p].exclude) {
+          newConfig.exclude = mergeUnique(newConfig.exclude, PRESETS[p].exclude);
+          modified = true;
         }
-        newConfig.excludePaths = mergeUnique(newConfig.excludePaths, PRESETS[p].excludePaths || []);
-        newConfig.includeExtensions = mergeUnique(newConfig.includeExtensions, PRESETS[p].includeExtensions || []);
-        modified = true;
+        if (PRESETS[p].include) {
+          newConfig.include = mergeUnique(newConfig.include, PRESETS[p].include);
+          modified = true;
+        }
       } else {
         console.warn(`⚠️ Warning: Preset '${p}' not found.`);
       }
     });
   }
 
-  // Apply additions and removals for exclusion paths.
+  // Excludes
   if (argv.addExclude) {
-    newConfig.excludePaths = mergeUnique(newConfig.excludePaths, argv.addExclude);
+    newConfig.exclude = mergeUnique(newConfig.exclude, argv.addExclude);
     modified = true;
   }
   if (argv.removeExclude) {
     const toRemove = new Set(argv.removeExclude);
-    newConfig.excludePaths = newConfig.excludePaths.filter(p => !toRemove.has(p));
+    newConfig.exclude = newConfig.exclude.filter(p => !toRemove.has(p));
     modified = true;
   }
 
-  // Apply additions and removals for included extensions.
+  // Includes / Extensions
   if (argv.addExt) {
-    const extensions = argv.addExt.map(e => e.startsWith('.') ? e : `.${e}`);
-    newConfig.includeExtensions = mergeUnique(newConfig.includeExtensions, extensions);
+    const extensions = argv.addExt.map(e => e.replace(/^\./, "")).join(',');
+    newConfig.include.push(`**/*.{${extensions}}`);
     modified = true;
   }
-  if (argv.removeExt) {
-    const toRemove = new Set(argv.removeExt.map(e => e.startsWith('.') ? e : `.${e}`));
-    newConfig.includeExtensions = newConfig.includeExtensions.filter(ext => !toRemove.has(ext));
+  if (argv.include) {
+    newConfig.include = mergeUnique(newConfig.include, argv.include);
     modified = true;
   }
 
-  // Handle direct settings overrides.
+  // Options
   if (argv.output && argv.output !== newConfig.outputFile) {
     newConfig.outputFile = argv.output;
     modified = true;
   }
-  if (argv.maxSize && argv.maxSize !== newConfig.maxFileSizeKB) {
-    newConfig.maxFileSizeKB = argv.maxSize;
+
+  if (!newConfig.options) newConfig.options = {};
+
+  if (argv.maxSize && argv.maxSize !== newConfig.options.maxFileSizeKB) {
+    newConfig.options.maxFileSizeKB = argv.maxSize;
     modified = true;
   }
-  
-  // Handle the useGitignore setting.
-  if (argv.useGitignore !== undefined && argv.useGitignore !== newConfig.useGitignore) {
-    newConfig.useGitignore = argv.useGitignore;
+  if (argv.useGitignore !== undefined) {
+    newConfig.options.useGitignore = argv.useGitignore;
+    modified = true;
+  }
+  if (argv.removeComments !== undefined) {
+    newConfig.options.removeComments = argv.removeComments;
+    modified = true;
+  }
+  if (argv.removeEmptyLines !== undefined) {
+    newConfig.options.removeEmptyLines = argv.removeEmptyLines;
     modified = true;
   }
 
-  // Handle include paths additions.
-  if (argv.include) {
-    newConfig.includePaths = mergeUnique(newConfig.includePaths || [], argv.include);
-    modified = true;
-  }
-  
   return { config: newConfig, modified };
 }
 
-/**
- * The main entry point for the CLI application.
- */
 async function run() {
   const argv = yargs(hideBin(process.argv))
-    .usage('Usage: $0 [options]\n\nCreates a comprehensive context file for AI assistants.')
-    .option('reset', {
-        describe: 'Reset configuration to base defaults before applying other flags.',
-        type: 'boolean',
-    })
-    .option('include', {
-      alias: 'i',
-      describe: 'Force inclusion of specific paths, even if they are hidden.',
-      type: 'array',
-    })
-    .option('preset', {
-      alias: 'p',
-      describe: 'Apply one or more presets (e.g., -p nodejs android). Updates config file.',
-      type: 'array',
-    })
-    .option('add-exclude', {
-      alias: 'a',
-      describe: 'Add paths/patterns to the exclusion list.',
-      type: 'array',
-    })
-    .option('remove-exclude', {
-      alias: 'r',
-      describe: 'Remove paths/patterns from the exclusion list.',
-      type: 'array',
-    })
-    .option('add-ext', {
-      describe: 'Add file extensions to the inclusion list.',
-      type: 'array',
-    })
-    .option('remove-ext', {
-      describe: 'Remove file extensions from the inclusion list.',
-      type: 'array',
-    })
-    .option('output', {
-      alias: 'o',
-      describe: 'Set the output file name.',
-      type: 'string',
-    })
-    .option('max-size', {
-      describe: 'Set max file size in KB to include.',
-      type: 'number',
-    })
-    .option('use-gitignore', {
-        describe: 'Enable or disable using .gitignore for exclusions.',
-        type: 'boolean'
-    })
-    .option('init', {
-        describe: 'Initialize or update config file without generating context.',
-        type: 'boolean'
-    })
-    .option('debug', {
-      describe: 'Enable debug mode to show the generated `find` command.',
-      type: 'boolean',
-    })
+    .usage('Usage: $0 [options]\n\nGenerates optimized project context for AI.')
+    // Management
+    .option('reset', { describe: 'Reset configuration to defaults.', type: 'boolean' })
+    .option('init', { describe: 'Initialize/Update config only.', type: 'boolean' })
+    .option('debug', { describe: 'Show debug info.', type: 'boolean' })
+    // Selection
+    .option('preset', { alias: 'p', describe: 'Apply tech presets.', type: 'array' })
+    .option('include', { alias: 'i', describe: 'Add include glob (e.g. src/**/*).', type: 'array' })
+    .option('add-exclude', { alias: 'a', describe: 'Add exclude glob.', type: 'array' })
+    .option('remove-exclude', { alias: 'r', describe: 'Remove exclude glob.', type: 'array' })
+    .option('add-ext', { describe: 'Add extension glob (e.g. .ts).', type: 'array' })
+    // Settings
+    .option('output', { alias: 'o', describe: 'Output filename.', type: 'string' })
+    .option('max-size', { describe: 'Max file size (KB).', type: 'number' })
+    .option('use-gitignore', { describe: 'Respect .gitignore.', type: 'boolean' })
+    // Optimizations
+    .option('remove-comments', { describe: 'Strip code comments.', type: 'boolean' })
+    .option('remove-empty-lines', { describe: 'Remove empty lines.', type: 'boolean' })
     .help()
     .alias('h', 'help')
     .argv;
 
   let config = loadConfig();
+  let shouldSave = false;
 
+  // Reset
   if (argv.reset) {
-      console.log("🔄 Resetting configuration to defaults...");
-      config = null; // Setting config to null will trigger the creation of a fresh config file.
+    console.log("🔄 Resetting configuration to defaults...");
+    config = null;
   }
 
-  // Determine if the user provided any CLI arguments that modify the configuration.
-  const hasCliModifiers = argv.preset || argv.addExclude || argv.removeExclude || argv.addExt || argv.removeExt || argv.output || argv.maxSize || argv.useGitignore || argv.include;
-
+  // Initialize Default
   if (config === null) {
-      console.log("...Initializing new configuration.");
-      config = JSON.parse(JSON.stringify(BASE_CONFIG));
+    console.log("...Auto-generating configuration file.");
+    config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    const prettyConfig = formatPrettyConfig(config);
+    const configPath = require('path').join(process.cwd(), 'genctx.config.json');
+    require('fs').writeFileSync(configPath, prettyConfig);
+    console.log(`💾 Configuration updated in genctx.config.json`);
+    shouldSave = false;
   }
-  
-  if (hasCliModifiers || argv.reset) {
+
+  // Apply CLI Flags
+  const hasCliModifiers = argv.preset || argv.addExclude || argv.removeExclude || argv.addExt || argv.output || argv.maxSize || argv.useGitignore || argv.include || argv.removeComments || argv.removeEmptyLines;
+
+  if (hasCliModifiers) {
     const { config: newConfig, modified } = applyCliModifications(config, argv);
-    if (modified || argv.reset) {
-      saveConfig(newConfig);
+    if (modified) {
       config = newConfig;
+      shouldSave = true;
     }
   }
 
+  if (shouldSave) saveConfig(config);
+
   if (argv.init) {
-      console.log("✅ Configuration initialized/updated. Exiting without generating context file.");
-      return;
+    console.log("✅ Configuration initialized/updated.");
+    return;
   }
-  
-  // Pass the final, effective configuration to the generation logic.
-  await generateContextFile(config, argv.debug);
+
+  await generateContextFile(config);
 }
 
 module.exports = { run };

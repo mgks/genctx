@@ -1,123 +1,125 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_FILE_NAME = 'genctx.json';
+const CONFIG_FILE_NAME = 'genctx.config.json';
+const LEGACY_CONFIG_FILE_NAME = 'genctx.json';
 
-// A sensible base that applies to most projects.
-const BASE_CONFIG = {
-  excludePaths: [
-    'context.md', '.DS_Store', 'node_modules', 'vendor',
-    '.git/', '.github/', 'dist/', 'build/', '.gradle/', '.idea/',
-    '*.log', '*.lock', 'LICENSE', 'yarn.lock', 'package-lock.json',
+const DEFAULT_CONFIG = {
+  include: ['**/*'],
+  exclude: [
+    'node_modules', '.git',
+    'dist', 'build', 'out', 'target', 'vendor', 'bin', '.next', '.nuxt',
+    '.venv', 'venv',
+    '.env', '.env.*'
   ],
-  includePaths: [],
-  includeExtensions: [
-    '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.scss',
-    '.json', '.md', '.txt', '.yml', '.yaml',
-  ],
-  maxFileSizeKB: 500,
-  outputFile: 'context.md',
-  useGitignore: false,  // Whether to respect .gitignore files in the project.
-  // Tracks which presets have been applied to this configuration.
-  presets: [],
+  outputFile: 'genctx.context.md',
+  options: {
+    removeComments: false,
+    removeEmptyLines: false,
+    maxFileSizeKB: 2048,
+    maxTotalTokens: 0,
+    maxFileTokens: 0,
+    useGitignore: true
+  }
 };
 
-// Expanded list of additive presets for various technologies.
+const INTERNAL_EXCLUDES = [
+  '*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.svg',
+  '*.mp4', '*.mp3', '*.pdf',
+  '*.zip', '*.tar', '*.gz', '*.7z', '*.rar',
+  '*.exe', '*.dll', '*.so', '*.dylib', '*.bin',
+  '*.sqlite', '*.db',
+  '.DS_Store', 'Thumbs.db',
+  '.idea', '.vscode', '.vs',
+  '.gitignore', '.gitattributes', '.npmignore', '.dockerignore', '.editorconfig', '.eslint*', '.prettier*',
+  '*.pem', '*.key', '*.cert', '*.pfx', '*.p12', 'id_rsa', 'id_dsa',
+  '__pycache__', '*.pyc', '*.pyo', '*.pyd', '.pytest_cache', '.cache', '.parcel-cache',
+  '*.log', 'npm-debug.log', 'yarn-error.log', 'pnpm-debug.log',
+  'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock', 'Cargo.lock', 'go.sum',
+  'genctx.config.json', 'genctx.context.md'
+];
+
 const PRESETS = {
-  // Web & General
-  nodejs: {
-    excludePaths: ['coverage/', '.env'],
-    includeExtensions: ['.mjs', '.cjs'],
-  },
-  python: {
-    excludePaths: ['__pycache__/', '.venv/', 'venv/', '*.pyc', '.env', 'requirements.txt'],
-    includeExtensions: ['.py'],
-  },
-  // Mobile
-  android: {
-    excludePaths: ['captures/', '*.apk', '*.aab', '*.iml', 'gradle/', 'gradlew', 'gradlew.bat', 'local.properties'],
-    includeExtensions: ['.java', '.kt', '.kts', '.xml', '.gradle', '.pro'],
-  },
-  swift: {
-    excludePaths: ['.swiftpm/', 'Packages/', 'DerivedData/', '*.xcodeproj', '*.xcworkspace'],
-    includeExtensions: ['.swift'],
-  },
-  // Backend & Systems
-  java: {
-    excludePaths: ['target/', '.mvn/', '*.jar', '*.war', 'logs/'],
-    includeExtensions: ['.java', '.xml', '.properties', '.pom'],
-  },
-  go: {
-    excludePaths: ['*.exe', '*.bin', 'go.sum'],
-    includeExtensions: ['.go'],
-  },
-  rust: {
-    excludePaths: ['target/', 'Cargo.lock'],
-    includeExtensions: ['.rs'],
-  },
-  ruby: {
-    excludePaths: ['tmp/', 'log/', 'Gemfile.lock'],
-    includeExtensions: ['.rb'],
-  },
-  php: {
-    excludePaths: ['composer.lock'],
-    includeExtensions: ['.php'],
-  },
-  dotnet: {
-    excludePaths: ['bin/', 'obj/', '*.sln', '*.csproj'],
-    includeExtensions: ['.cs'],
-  },
-  c_cpp: {
-    excludePaths: ['*.o', '*.out', '*.a', '*.so', 'Makefile', 'CMakeLists.txt'],
-    includeExtensions: ['.c', '.h', '.cpp', '.hpp'],
-  },
-  // Data Science
-  r: {
-    excludePaths: ['.Rhistory', '.RData'],
-    includeExtensions: ['.r', '.R'],
-  },
+  nodejs: { exclude: [] },
+  python: { exclude: ['requirements.txt'] },
 };
 
-/**
- * Loads the configuration from genctx.json if it exists.
- * @returns {object|null} The loaded configuration object or null if not found.
- */
 function loadConfig() {
   const configPath = path.join(process.cwd(), CONFIG_FILE_NAME);
+  const legacyConfigPath = path.join(process.cwd(), LEGACY_CONFIG_FILE_NAME);
+
   if (fs.existsSync(configPath)) {
+    return parseConfigFile(configPath, CONFIG_FILE_NAME);
+  } else if (fs.existsSync(legacyConfigPath)) {
+    const legacy = parseConfigFile(legacyConfigPath, LEGACY_CONFIG_FILE_NAME);
+    if (!legacy) return null;
+    return migrateLegacyConfig(legacy);
+  }
+  return null;
+}
+
+function migrateLegacyConfig(legacy) {
+  const config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+
+  // Map legacy include paths
+  if (legacy.includePaths && legacy.includePaths.length > 0) {
+    config.include = legacy.includePaths.map(p => {
+      const clean = p.replace(/\/$/, "");
+      return `${clean}/**/*`;
+    });
+  }
+
+  // Map legacy extensions
+  if (legacy.includeExtensions && legacy.includeExtensions.length > 0) {
+    const extPattern = legacy.includeExtensions.map(e => e.replace(/^\./, "")).join(',');
+    config.include = config.include.map(pattern => {
+      if (pattern.endsWith('**/*')) {
+        return pattern.replace('**/*', `**/*.{${extPattern}}`);
+      }
+      return pattern;
+    });
+  }
+
+  // Map excludes
+  if (legacy.excludePaths) {
+    config.exclude = [...new Set([...config.exclude, ...legacy.excludePaths])];
+  }
+
+  // Map options
+  if (legacy.outputFile) config.outputFile = legacy.outputFile;
+  if (legacy.removeComments) config.options.removeComments = legacy.removeComments;
+  if (legacy.removeEmptyLines) config.options.removeEmptyLines = legacy.removeEmptyLines;
+  if (legacy.maxFileSizeKB) config.options.maxFileSizeKB = legacy.maxFileSizeKB;
+
+  return config;
+}
+
+function parseConfigFile(fullPath, fileName) {
+  if (fs.existsSync(fullPath)) {
     try {
-      const fileContent = fs.readFileSync(configPath, 'utf8');
-      return JSON.parse(fileContent);
+      return JSON.parse(fs.readFileSync(fullPath, 'utf8'));
     } catch (e) {
-      console.warn(`⚠️ Warning: Could not parse ${CONFIG_FILE_NAME}. Using defaults. Error: ${e.message}`);
+      console.warn(`⚠️ Could not parse ${fileName}. Using defaults. Error: ${e.message}`);
       return null;
     }
   }
   return null;
 }
 
-/**
- * Saves the configuration object to genctx.json.
- * @param {object} config The configuration object to save.
- */
 function saveConfig(config) {
   const configPath = path.join(process.cwd(), CONFIG_FILE_NAME);
   try {
-    // Sort arrays for a clean and deterministic file output.
-    config.excludePaths.sort();
-    config.includeExtensions.sort();
-    if (config.presets) config.presets.sort();
-
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log(`💾 Configuration saved to ${CONFIG_FILE_NAME}`);
+    console.log(`💾 Configuration updated in ${CONFIG_FILE_NAME}`);
   } catch (e) {
-    console.error(`❌ Error saving configuration to ${CONFIG_FILE_NAME}: ${e.message}`);
+    console.error(`❌ Error saving configuration: ${e.message}`);
   }
 }
 
 module.exports = {
-    BASE_CONFIG,
-    PRESETS,
-    loadConfig,
-    saveConfig
+  DEFAULT_CONFIG,
+  INTERNAL_EXCLUDES,
+  PRESETS,
+  loadConfig,
+  saveConfig
 };
