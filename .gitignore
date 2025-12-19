@@ -1,4 +1,4 @@
 /node_modules
 .DS_Store
-genctx.json
-context.md
+genctx.config.json
+genctx.context.md
