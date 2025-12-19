@@ -7,7 +7,8 @@
     "genctx": "bin/genctx.js"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"No tests specified currently\" && exit 0",
+    "start": "node bin/genctx.js"
   },
   "keywords": [
     "ai",
