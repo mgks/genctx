@@ -1,7 +1,7 @@
 {
   "name": "genctx",
-  "version": "0.1.0",
-  "description": "The CLI for generating high-signal, optimized code context for AI assistants and automation. Create project context for GPT, Claude, and more.",
+  "version": "0.2.0",
+  "description": "CLI to generate high-signal, token-optimized code context for AI models.",
   "main": "src/main.js",
   "bin": {
     "genctx": "./bin/genctx"
@@ -9,33 +9,35 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "ai",
+    "context",
+    "llm",
+    "cli",
+    "dev-tools",
+    "openai",
+    "claude"
+  ],
+  "dependencies": {
+    "fast-glob": "^3.3.3",
+    "clean-context": "^0.1.0",
+    "yargs": "^17.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": {
+    "name": "mgks",
+    "url": "https://mgks.dev"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mgks/genctx.git"
   },
-  "keywords": [
-    "ai",
-    "context",
-    "aicontext",
-    "llmcontext",
-    "genctx",
-    "gencontext",
-    "automation",
-    "llm",
-    "prompt",
-    "dev-tools",
-    "cli",
-    "gpt",
-    "claude",
-    "prompt-engineering"
-  ],
-  "author": "Ghazi Khan (mgks.dev)",
-  "license": "MIT",
   "bugs": {
     "url": "https://github.com/mgks/genctx/issues"
   },
   "homepage": "https://github.com/mgks/genctx#readme",
-  "dependencies": {
-    "yargs": "^17.7.2"
-  }
+  "funding": "https://github.com/sponsors/mgks",
+  "license": "MIT"
 }
