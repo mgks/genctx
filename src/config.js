@@ -24,11 +24,13 @@ const DEFAULT_CONFIG = {
 };
 
 const INTERNAL_EXCLUDES = [
-  '*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.svg',
-  '*.mp4', '*.mp3', '*.pdf',
-  '*.zip', '*.tar', '*.gz', '*.7z', '*.rar',
-  '*.exe', '*.dll', '*.so', '*.dylib', '*.bin',
-  '*.sqlite', '*.db',
+  '*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.svg', '*.webp', '*.tiff', '*.bmp', '*.heic',
+  '*.mp4', '*.mp3', '*.wav', '*.ogg', '*.webm', '*.mov', '*.avi', '*.mkv',
+  '*.pdf', '*.doc', '*.docx', '*.xls', '*.xlsx', '*.ppt', '*.pptx',
+  '*.zip', '*.tar', '*.gz', '*.7z', '*.rar', '*.jar',
+  '*.exe', '*.dll', '*.so', '*.dylib', '*.bin', '*.iso', '*.img',
+  '*.sqlite', '*.db', '*.db3',
+  '*.eot', '*.otf', '*.ttf', '*.woff', '*.woff2',
   '.DS_Store', 'Thumbs.db',
   '.idea', '.vscode', '.vs',
   '.gitignore', '.gitattributes', '.npmignore', '.dockerignore', '.editorconfig', '.eslint*', '.prettier*',

@@ -2,10 +2,15 @@ const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const { DEFAULT_CONFIG, PRESETS, loadConfig, saveConfig } = require('./config');
 const { generateContextFile } = require('./generator');
+const packageJson = require('../package.json'); // Import version
 
-// Format JSON config with grouped excludes for readability
+/**
+ * Custom formatter to group excludes nicely in the JSON file.
+ * Keeps the config file readable for humans.
+ */
 function formatPrettyConfig(config) {
   let json = JSON.stringify(config, null, 2);
+
   const excludeRegex = /"exclude": \[\s*([\s\S]*?)\s*\]/;
   const match = json.match(excludeRegex);
 
@@ -14,7 +19,11 @@ function formatPrettyConfig(config) {
     const items = rawContent.split(',').map(s => s.trim().replace(/"/g, '')).filter(s => s);
 
     const groups = {
-      sys: [], sec: [], build: [], lang: [], files: []
+      sys: [],    // node_modules, .git
+      sec: [],    // .env
+      build: [],  // dist, build, vendor
+      lang: [],   // .venv
+      files: []   // generic files
     };
 
     items.forEach(item => {
@@ -25,6 +34,8 @@ function formatPrettyConfig(config) {
       else if (['.venv', 'venv'].includes(item)) groups.lang.push(item);
       else groups.files.push(item);
     });
+
+    const formatGroup = (arr) => arr.length ? `\n    ${arr.map(x => `"${x}"`).join(', ')},` : '';
 
     const lines = [];
     if (groups.sys.length) lines.push(groups.sys);
@@ -40,15 +51,19 @@ function formatPrettyConfig(config) {
 
     json = json.replace(excludeRegex, `"exclude": [${newContent}\n  ]`);
   }
+
   return json;
 }
 
+/**
+ * Logic to override config values with CLI flags.
+ */
 function applyCliModifications(currentConfig, argv) {
   let modified = false;
   const newConfig = JSON.parse(JSON.stringify(currentConfig));
   const mergeUnique = (target, source) => [...new Set([...target, ...source])];
 
-  // Presets
+  // 1. Presets
   if (argv.preset && argv.preset.length > 0) {
     argv.preset.forEach(p => {
       if (PRESETS[p]) {
@@ -66,7 +81,7 @@ function applyCliModifications(currentConfig, argv) {
     });
   }
 
-  // Excludes
+  // 2. Excludes
   if (argv.addExclude) {
     newConfig.exclude = mergeUnique(newConfig.exclude, argv.addExclude);
     modified = true;
@@ -77,7 +92,7 @@ function applyCliModifications(currentConfig, argv) {
     modified = true;
   }
 
-  // Includes / Extensions
+  // 3. Includes / Extensions
   if (argv.addExt) {
     const extensions = argv.addExt.map(e => e.replace(/^\./, "")).join(',');
     newConfig.include.push(`**/*.{${extensions}}`);
@@ -88,7 +103,7 @@ function applyCliModifications(currentConfig, argv) {
     modified = true;
   }
 
-  // Options
+  // 4. Options
   if (argv.output && argv.output !== newConfig.outputFile) {
     newConfig.outputFile = argv.output;
     modified = true;
@@ -118,49 +133,60 @@ function applyCliModifications(currentConfig, argv) {
 
 async function run() {
   const argv = yargs(hideBin(process.argv))
-    .usage('Usage: $0 [options]\n\nGenerates optimized project context for AI.')
-    // Management
+    .scriptName('genctx')
+    .usage('Usage: $0 [options]')
+    
+    // --- Management ---
     .option('reset', { describe: 'Reset configuration to defaults.', type: 'boolean' })
-    .option('init', { describe: 'Initialize/Update config only.', type: 'boolean' })
-    .option('debug', { describe: 'Show debug info.', type: 'boolean' })
-    // Selection
-    .option('preset', { alias: 'p', describe: 'Apply tech presets.', type: 'array' })
-    .option('include', { alias: 'i', describe: 'Add include glob (e.g. src/**/*).', type: 'array' })
-    .option('add-exclude', { alias: 'a', describe: 'Add exclude glob.', type: 'array' })
-    .option('remove-exclude', { alias: 'r', describe: 'Remove exclude glob.', type: 'array' })
-    .option('add-ext', { describe: 'Add extension glob (e.g. .ts).', type: 'array' })
-    // Settings
+    .option('init', { describe: 'Initialize/Update config file only.', type: 'boolean' })
+
+    // --- Selection ---
+    .option('preset', { alias: 'p', describe: 'Apply tech presets (e.g., nodejs, python).', type: 'array' })
+    .option('include', { alias: 'i', describe: 'Add include patterns (e.g., src/**/*).', type: 'array' })
+    .option('add-exclude', { alias: 'a', describe: 'Add exclude patterns.', type: 'array' })
+    .option('remove-exclude', { alias: 'r', describe: 'Remove exclude patterns.', type: 'array' })
+    .option('add-ext', { describe: 'Add extension glob (e.g., .ts).', type: 'array' })
+
+    // --- Settings ---
     .option('output', { alias: 'o', describe: 'Output filename.', type: 'string' })
     .option('max-size', { describe: 'Max file size (KB).', type: 'number' })
-    .option('use-gitignore', { describe: 'Respect .gitignore.', type: 'boolean' })
-    // Optimizations
-    .option('remove-comments', { describe: 'Strip code comments.', type: 'boolean' })
-    .option('remove-empty-lines', { describe: 'Remove empty lines.', type: 'boolean' })
+    .option('use-gitignore', { describe: 'Respect .gitignore rules.', type: 'boolean' })
+
+    // --- Optimizations ---
+    .option('remove-comments', { describe: 'Strip code comments to save tokens.', type: 'boolean' })
+    .option('remove-empty-lines', { describe: 'Remove empty vertical whitespace.', type: 'boolean' })
+
+    // --- Meta ---
+    .version(packageJson.version)
+    .alias('v', 'version')
     .help()
     .alias('h', 'help')
+    .epilogue('For documentation, visit https://github.com/mgks/genctx')
     .argv;
 
   let config = loadConfig();
   let shouldSave = false;
 
-  // Reset
+  // 1. Reset Logic
   if (argv.reset) {
     console.log("🔄 Resetting configuration to defaults...");
     config = null;
   }
 
-  // Initialize Default
+  // 2. Init Default Logic (If missing or reset)
   if (config === null) {
     console.log("...Auto-generating configuration file.");
     config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+
     const prettyConfig = formatPrettyConfig(config);
     const configPath = require('path').join(process.cwd(), 'genctx.config.json');
     require('fs').writeFileSync(configPath, prettyConfig);
     console.log(`💾 Configuration updated in genctx.config.json`);
+
     shouldSave = false;
   }
 
-  // Apply CLI Flags
+  // 3. Apply CLI Modifiers
   const hasCliModifiers = argv.preset || argv.addExclude || argv.removeExclude || argv.addExt || argv.output || argv.maxSize || argv.useGitignore || argv.include || argv.removeComments || argv.removeEmptyLines;
 
   if (hasCliModifiers) {
@@ -171,13 +197,17 @@ async function run() {
     }
   }
 
-  if (shouldSave) saveConfig(config);
+  // 4. Persistence
+  if (shouldSave) {
+    saveConfig(config);
+  }
 
   if (argv.init) {
     console.log("✅ Configuration initialized/updated.");
     return;
   }
 
+  // 5. Run Generator
   await generateContextFile(config);
 }
 

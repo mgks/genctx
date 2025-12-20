@@ -56,6 +56,29 @@ function getLanguageFromExt(filePath) {
 }
 
 /**
+ * Checks if a file is binary by reading the first 512 bytes.
+ * If it contains a null byte, we treat it as binary.
+ */
+function isBinaryFile(filePath) {
+    try {
+        const buffer = Buffer.alloc(512);
+        const fd = fs.openSync(filePath, 'r');
+        const bytesRead = fs.readSync(fd, buffer, 0, 512, 0);
+        fs.closeSync(fd);
+        
+        // If file is empty, it's "text" (safe to read)
+        if (bytesRead === 0) return false;
+
+        for (let i = 0; i < bytesRead; i++) {
+            if (buffer[i] === 0) return true; // Null byte found -> Binary
+        }
+        return false;
+    } catch (e) {
+        return false; // On error, assume text to let main loop handle read error
+    }
+}
+
+/**
  * Visualizes the file structure.
  */
 function generateTreeStructure(filePaths) {
@@ -229,6 +252,16 @@ async function generateContextFile(config) {
             stats.skippedDueToSize++;
             const relativeName = path.relative(process.cwd(), filePath);
             outputContent += `### \`${relativeName}\`\n\n*Skipped: Size ${formatFileSize(currentFileSizeKB)} > ${maxKB} KB*\n\n`;
+            continue;
+        }
+
+        // Binary Check
+        if (isBinaryFile(filePath)) {
+            // stats.skippedOther++; // Optional metric update
+            const relativeName = path.relative(process.cwd(), filePath);
+            // We verify it's not a known text type that might validly have nulls (rare in source code)
+            // But generally, source code never has null bytes.
+            outputContent += `### \`${relativeName}\`\n\n*Skipped: Binary file detected*\n\n`;
             continue;
         }
 
