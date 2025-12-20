@@ -1,4 +1,4 @@
-# genctx (GenContext)
+# genctx (Generate Context)
 
 <p align="left">
   <a href="https://www.npmjs.com/package/genctx"><img src="https://img.shields.io/npm/v/genctx.svg?style=flat-square&color=007acc" alt="npm version"></a>
@@ -52,23 +52,6 @@ Generate context for just one file (useful for targeted debugging).
 npx genctx --include src/main.js
 ```
 
-### Programmatic API (Node.js)
-You can use `genctx` inside your own build scripts or tools.
-
-```javascript
-const { generate } = require('genctx');
-
-await generate({
-  include: ['src/**/*.ts'],
-  exclude: ['**/*.test.ts'],
-  outputFile: 'docs/context.md',
-  options: {
-    removeComments: true,
-    removeEmptyLines: true
-  }
-});
-```
-
 ### Optimize for Tokens
 Strip all comments and empty lines to fit a large codebase into a small context window.
 ```bash
@@ -88,6 +71,23 @@ npx genctx --preset nodejs
 npx genctx --preset python
 ```
 
+### Programmatic API (Node.js)
+You can use `genctx` inside your own build scripts or tools.
+
+```javascript
+const { generate } = require('genctx');
+
+await generate({
+  include: ['src/**/*.ts'],
+  exclude: ['**/*.test.ts'],
+  outputFile: 'docs/context.md',
+  options: {
+    removeComments: true,
+    removeEmptyLines: true
+  }
+});
+```
+
 > **Need to clean raw code strings?**  
 > `genctx` is designed for files and directories. If you need to strip comments from raw strings or code blocks, check out **[clean-context](https://www.npmjs.com/package/clean-context)**.
 
@@ -104,45 +104,30 @@ This creates **`genctx.config.json`**:
 
 ```json
 {
-  "includeExtensions": [
-    ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".md", ".yml"
+  "include": ["**/*"],
+  "exclude": [
+    "node_modules", ".git", ".env", "dist", "build"
   ],
-  "excludePaths": [
-    "dist", "coverage", "test", "*.log"
-  ],
-  "removeComments": false,
-  "removeEmptyLines": false,
   "outputFile": "genctx.context.md",
-  "maxFileSizeKB": 500,
-  "useGitignore": true
-}
-```
-
-> `genctx` looks for `genctx.config.json` in the current directory.
-
-| Option | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `include` | `string[]` | `["**/*"]` | Array of glob patterns to include. |
-| `exclude` | `string[]` | `["node_modules", ...]` | Array of glob patterns to exclude. |
-| `options.useGitignore` | `boolean` | `true` | Respect `.gitignore` rules automatically. |
-| `options.maxFileSizeKB` | `number` | `2048` | Skip files larger than this size (Safeguard). |
-| `options.maxTotalTokens` | `number` | `0` | **Hard Stop**. Stop processing files once context hits this limit. |
-| `options.maxFileTokens` | `number` | `0` | **Skip File**. Ignore individual files exceeding this limit. |
-| `options.removeComments` | `boolean` | `false` | Strip comments to save tokens. |
-
-> **Note on Tokens**: Token counts are estimates (`chars / 3.2`). This heuristic is optimized for code density (which is higher than plain English).
-
-### Example Config
-```json
-{
-  "include": ["src/**/*", "package.json"],
-  "exclude": ["node_modules", ".env"],
   "options": {
-    "maxTotalTokens": 50000,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "maxFileSizeKB": 2048,
     "useGitignore": true
   }
 }
 ```
+
+### CLI Options
+
+| Option | Alias | Description |
+| :--- | :--- | :--- |
+| `--version` | `-v` | Show current version. |
+| `--help` | `-h` | Show usage information. |
+| `--output` | `-o` | Output filename. |
+| `--include` | `-i` | Add include glob patterns. |
+| `--remove-comments` | | Strip code comments to save tokens. |
+| `--remove-empty-lines` | | Remove empty vertical whitespace. |
 
 ### 🛡️ Smart Binary Detection
 `genctx` doesn't just rely on file extensions. It performs **content inspection** (reading the first 512 bytes) to detect binary files. This prevents accidental inclusion of compiled binaries, obscure media formats, or corrupted files that could break your LLM context window.
@@ -156,10 +141,9 @@ The `include` option works as a strict **whitelist**. This allows you to cherry-
 ```json
 {
   "include": [
-    "src/**/*",          // Include all source code
-    "bin/genctx"         // Explicitly include this ONE file
+    "src/**/*",
+    "bin/genctx"
   ],
-  // Note: "bin/other-junk" is automatically ignored because it's not in the include list.
   "exclude": ["node_modules"]
 }
 ```
