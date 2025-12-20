@@ -1,6 +1,6 @@
 {
   "name": "genctx",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CLI to generate high-signal, token-optimized code context for AI models.",
   "main": "src/index.js",
   "bin": {
