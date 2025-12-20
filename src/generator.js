@@ -212,7 +212,7 @@ async function generateContextFile(config) {
 
     const stats = {
         totalFilesFound: filesToProcess.length,
-        totalFilesProcessed: filesToProcess.length,
+        totalFilesProcessed: 0,
         includedFileContents: 0,
         skippedDueToSize: 0,
         skippedOther: 0,
@@ -239,29 +239,29 @@ async function generateContextFile(config) {
             outputContent += `\n> **Context Limit Reached**: Further files omitted.\n`;
             break;
         }
-
-        const currentFileSizeKB = getFileSizeInKB(filePath);
         
+        const currentFileSizeKB = getFileSizeInKB(filePath);
+        const relativeName = path.relative(process.cwd(), filePath);
+
         // Config Options
         const maxKB = config.options?.maxFileSizeKB || 2048;
         const rmComments = config.options?.removeComments || false;
         const rmEmpty = config.options?.removeEmptyLines || false;
         const maxFileTokens = config.options?.maxFileTokens || 0;
 
-        if (currentFileSizeKB > maxKB) {
-            stats.skippedDueToSize++;
-            const relativeName = path.relative(process.cwd(), filePath);
-            outputContent += `### \`${relativeName}\`\n\n*Skipped: Size ${formatFileSize(currentFileSizeKB)} > ${maxKB} KB*\n\n`;
+        // Binary Check
+        if (isBinaryFile(filePath)) {
+            console.log(`   ⚠️  Skipped Binary: ${relativeName}`);
+            // outputContent += `### \`${relativeName}\`\n\n*Skipped: Binary file detected*\n\n`;
+            stats.skippedOther++;
             continue;
         }
 
-        // Binary Check
-        if (isBinaryFile(filePath)) {
-            // stats.skippedOther++; // Optional metric update
-            const relativeName = path.relative(process.cwd(), filePath);
-            // We verify it's not a known text type that might validly have nulls (rare in source code)
-            // But generally, source code never has null bytes.
-            outputContent += `### \`${relativeName}\`\n\n*Skipped: Binary file detected*\n\n`;
+        // File Size Check
+        if (currentFileSizeKB > maxKB) {
+            console.log(`   ⚠️  Skipped Large File: ${relativeName} (${formatFileSize(currentFileSizeKB)})`);
+            // outputContent += `### \`${relativeName}\`\n\n*Skipped: Size ${formatFileSize(currentFileSizeKB)} > ${maxKB} KB*\n\n`;
+            stats.skippedDueToSize++;
             continue;
         }
 
@@ -282,10 +282,10 @@ async function generateContextFile(config) {
 
             const fileTokens = estimateTokenCount(fileContent);
 
-            if (maxFileTokens > 0 && fileTokens > maxFileTokens) {
+            if (maxFileTokens > 0 && fileTokens > maxFileTokens) {                
+                console.log(`   ⚠️  Skipped Token Limit: ${relativeName} (~${formatNumber(fileTokens)} tokens)`);
+                // outputContent += `### \`${relativeName}\`\n\n*Skipped: Token count ~${formatNumber(fileTokens)} > ${maxFileTokens}*\n\n`;
                 stats.skippedDueToSize++;
-                const relativeName = path.relative(process.cwd(), filePath);
-                outputContent += `### \`${relativeName}\`\n\n*Skipped: Token count ~${formatNumber(fileTokens)} > ${maxFileTokens}*\n\n`;
                 continue;
             }
 
@@ -296,14 +296,12 @@ async function generateContextFile(config) {
             const fenceLength = Math.max(3, longestSequence + 1);
             const fence = '`'.repeat(fenceLength);
 
-            const relativeName = path.relative(process.cwd(), filePath);
             outputContent += `### \`${relativeName}\`\n\n${fence}${language}\n${fileContent.trim() ? fileContent : '[EMPTY FILE]'}\n${fence}\n\n`;
 
         } catch (error) {
+            console.warn(`   ❌ Read Error (${relativeName}): ${error.message}`);
+            // outputContent += `### \`${relativeName}\`\n\n*Read Error: ${error.message}*\n\n`;
             stats.skippedOther++;
-            const relativeName = path.relative(process.cwd(), filePath);
-            outputContent += `### \`${relativeName}\`\n\n*Read Error: ${error.message}*\n\n`;
-            console.warn(`Warning on ${filePath}: ${error.message}`);
         }
     }
 
@@ -317,8 +315,8 @@ async function generateContextFile(config) {
     console.log("=".repeat(60));
     console.log(`  • Output File:    ${config.outputFile} (${formatFileSize(outputFileSizeKB)})`);
     console.log(`  • Token Estimate: ~${formatNumber(stats.totalTokens)}`);
-    console.log(`  • Files Included: ${stats.includedFileContents} / ${stats.totalFilesProcessed}`);
-    if (config.options?.removeComments) console.log(`  • Optimization:   Comments Stripped (via clean-context) ✂️`);
+    console.log(`  • Files Included: ${stats.includedFileContents} / ${filesToProcess.length}`);
+    if (config.options?.removeComments) console.log(`  • Optimization:   Comments Stripped ✂️`);
     if (config.options?.removeEmptyLines) console.log(`  • Optimization:   Empty Lines Removed ✂️`);
     console.log("=".repeat(60));
     console.log("✨ Done!");
