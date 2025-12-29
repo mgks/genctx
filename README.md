@@ -91,6 +91,23 @@ await generate({
 > **Need to clean raw code strings?**  
 > `genctx` is designed for files and directories. If you need to strip comments from raw strings or code blocks, check out **[clean-context](https://www.npmjs.com/package/clean-context)**.
 
+### Directory Tree Modes
+
+By default, `genctx` generates a **"Context-Only"** tree. This means the directory structure in the output file only lists the files that the AI can actually read. Binary files (images), large files, or token-limited files are hidden to save tokens.
+
+**Want the full picture?**
+Use the `--tree-full` flag to include *all* discovered files in the tree (including images and large datasets), even if their content is skipped. This gives the AI better architectural context of your project's assets and data structure.
+
+```bash
+# Default: Only shows text files included in context
+npx genctx 
+
+# Full Mode: Shows everything (images, binaries, large files)
+npx genctx --tree-full
+```
+
+> **Note**: This does **not** show files you explicitly excluded (like `node_modules`). Excluded files are always hidden.
+
 ## ⚙️ Configuration
 
 While CLI flags are great for quick runs, you can persist your settings in a configuration file.
@@ -106,17 +123,28 @@ This creates **`genctx.config.json`**:
 {
   "include": ["**/*"],
   "exclude": [
-    "node_modules", ".git", ".env", "dist", "build"
+    "node_modules", ".git", ".env", "dist"
   ],
   "outputFile": "genctx.context.md",
   "options": {
     "removeComments": false,
     "removeEmptyLines": false,
+    "treeFull": false,
     "maxFileSizeKB": 2048,
     "useGitignore": true
   }
 }
 ```
+
+### ⚠️ Important: How Excludes Work
+`genctx` uses **strict glob patterns**, which behave differently than `.gitignore`.
+
+*   **To exclude a file in the root only**:
+    *   `"config.json"` (Matches `./config.json` only)
+*   **To exclude a file anywhere (Recursive)**:
+    *   `"**/config.json"` (Matches `src/config.json`, `config/config.json`, etc.)
+
+If you find a file isn't being excluded, make sure you are using the recursive `**/` pattern.
 
 ### CLI Options
 
@@ -125,7 +153,9 @@ This creates **`genctx.config.json`**:
 | `--version` | `-v` | Show current version. |
 | `--help` | `-h` | Show usage information. |
 | `--output` | `-o` | Output filename. |
+| `--tree-full` | | Show full directory structure (including skipped binaries). |
 | `--include` | `-i` | Add include glob patterns. |
+| `--add-exclude` | `-a` | Add exclude glob patterns. |
 | `--remove-comments` | | Strip code comments to save tokens. |
 | `--remove-empty-lines` | | Remove empty vertical whitespace. |
 
